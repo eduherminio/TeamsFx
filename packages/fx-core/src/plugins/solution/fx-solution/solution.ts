@@ -125,6 +125,7 @@ import {
   getAllResourcePluginMap,
   getAllResourcePlugins,
   ResourcePlugins,
+  ResourcePluginsV2,
 } from "./ResourcePluginContainer";
 import { getPluginContext, sendErrorTelemetryThenReturnError } from "./utils/util";
 import {
