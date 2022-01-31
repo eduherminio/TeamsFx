@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import {
+  AzureAccountProvider,
   AzureSolutionSettings,
   err,
   FxError,
@@ -37,7 +38,6 @@ import { SqlManagementClient, SqlManagementModels } from "@azure/arm-sql";
 import { SqlResultFactory } from "../results";
 import { ErrorMessage } from "../errors";
 import axios from "axios";
-import { AzureIdentity, AzureSQL } from "../../../../../../api/build/v3";
 import { SqlConfig } from "../config";
 import { Message } from "../utils/message";
 import { ConfigureMessage, DialogUtils, ProgressTitle } from "../utils/dialogUtils";
@@ -251,7 +251,8 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
     tokenProvider: TokenProvider
   ): Promise<Result<Void, FxError>> {
     ctx.logProvider?.info(Message.startPostProvision);
-    this.loadConfig(envInfo);
+
+    await this.loadConfig(envInfo, tokenProvider.azureAccountProvider);
 
     DialogUtils.init(
       ctx.userInteraction,
@@ -387,7 +388,7 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
       }
     }
   }
-  private loadConfig(envInfo: v3.EnvInfoV3) {
+  private async loadConfig(envInfo: v3.EnvInfoV3, azureAccountProvider: AzureAccountProvider) {
     const sqlResource = envInfo.state[BuiltInFeaturePluginNames.sql] as v3.AzureSQL;
     if (sqlResource) {
       this.config.sqlResourceId = sqlResource.sqlResourceId;
@@ -420,5 +421,14 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
     this.config.resourceNameSuffix = solutionConfig.resourceNameSuffix;
     this.config.location = solutionConfig.location;
     this.config.tenantId = solutionConfig.tenantId;
+
+    const skipAddingUser = envInfo.config?.[Constants.skipAddingSqlUser];
+    if (skipAddingUser === undefined) {
+      this.config.skipAddingUser = (await azureAccountProvider?.getIdentityCredentialAsync())
+        ? false
+        : true;
+    } else {
+      this.config.skipAddingUser = skipAddingUser as boolean;
+    }
   }
 }
