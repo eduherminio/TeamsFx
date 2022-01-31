@@ -30,15 +30,21 @@ import {
   BuiltInFeaturePluginNames,
   BuiltInSolutionNames,
 } from "../../../solution/fx-solution/v3/constants";
-import { AzureSqlBicep, AzureSqlBicepFile, Constants } from "../constants";
+import { AzureSqlBicep, AzureSqlBicepFile, Constants, HelpLinks, Telemetry } from "../constants";
 import fs from "fs-extra";
 import { adminNameQuestion, adminPasswordQuestion, confirmPasswordQuestion } from "../questions";
 import { SqlManagementClient, SqlManagementModels } from "@azure/arm-sql";
 import { SqlResultFactory } from "../results";
 import { ErrorMessage } from "../errors";
 import axios from "axios";
-import { AzureSQL } from "../../../../../../api/build/v3";
+import { AzureIdentity, AzureSQL } from "../../../../../../api/build/v3";
 import { SqlConfig } from "../config";
+import { Message } from "../utils/message";
+import { ConfigureMessage, DialogUtils, ProgressTitle } from "../utils/dialogUtils";
+import { UserType } from "../utils/commonUtils";
+import { SqlClient } from "../sqlClient";
+import { TelemetryUtils } from "../utils/telemetryUtils";
+import { ManagementClient } from "../managementClient";
 
 @Service(BuiltInFeaturePluginNames.sql)
 export class SqlPluginV3 implements v3.FeaturePlugin {
@@ -150,8 +156,6 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
     return ok({ kind: "bicep", template: result });
   }
 
-  createSqlManagementClient(cred: string, subId: string) {}
-
   async getQuestionsForProvision(
     ctx: v2.Context,
     inputs: Inputs,
@@ -246,42 +250,130 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
     envInfo: v3.EnvInfoV3,
     tokenProvider: TokenProvider
   ): Promise<Result<Void, FxError>> {
+    ctx.logProvider?.info(Message.startPostProvision);
     this.loadConfig(envInfo);
 
+    DialogUtils.init(
+      ctx.userInteraction,
+      ProgressTitle.PostProvision,
+      Object.keys(ConfigureMessage).length
+    );
+    TelemetryUtils.init(ctx.telemetryReporter);
+
+    const telemetryProperties = {
+      [Telemetry.properties.skipAddingUser]: this.config.skipAddingUser
+        ? Telemetry.valueYes
+        : Telemetry.valueNo,
+      [Telemetry.properties.dbCount]: this.config.databases.length.toString(),
+    };
+    TelemetryUtils.sendEvent(
+      Telemetry.stage.postProvision + Telemetry.startSuffix,
+      undefined,
+      telemetryProperties
+    );
+
+    const managementClient: ManagementClient = await ManagementClient.create(
+      tokenProvider.azureAccountProvider,
+      this.config
+    );
+
+    ctx.logProvider?.info(Message.addFirewall);
+    await managementClient.addLocalFirewallRule();
+
+    await DialogUtils.progressBar?.start();
+    await DialogUtils.progressBar?.next(ConfigureMessage.postProvisionAddAadmin);
+    await this.CheckAndSetAadAdmin(ctx, managementClient);
+
+    this.getIdentity(envInfo);
+
+    if (!this.config.skipAddingUser) {
+      await DialogUtils.progressBar?.next(ConfigureMessage.postProvisionAddUser);
+      // azure sql does not support service principal admin to add databse user currently, so just notice developer if so.
+      if (this.config.aadAdminType === UserType.User) {
+        ctx.logProvider?.info(Message.connectDatabase);
+        const sqlClient = await SqlClient.create(tokenProvider.azureAccountProvider, this.config);
+        ctx.logProvider?.info(Message.addDatabaseUser(this.config.identity));
+        await this.addDatabaseUser(ctx, sqlClient, managementClient);
+      } else {
+        const message = ErrorMessage.ServicePrincipalWarning(
+          this.config.identity,
+          this.config.databaseName
+        );
+        ctx.logProvider?.warning(
+          `[${Constants.pluginName}] ${message}. You can follow ${HelpLinks.default} to add database user ${this.config.identity}`
+        );
+      }
+    } else {
+      ctx.logProvider?.warning(
+        `[${Constants.pluginName}] Skip adding database user. You can follow ${HelpLinks.default} to add database user ${this.config.identity}`
+      );
+    }
+
+    await managementClient.deleteLocalFirewallRule();
+
+    TelemetryUtils.sendEvent(Telemetry.stage.postProvision, true, telemetryProperties);
+    ctx.logProvider?.info(Message.endPostProvision);
+    await DialogUtils.progressBar?.end(true);
     return ok(Void);
   }
-  private loadConfigSubscription(sqlResource: v3.AzureSQL) {
-    this.config.sqlResourceId = sqlResource.sqlResourceId;
-    if (this.config.sqlResourceId) {
+  public async addDatabaseUser(
+    ctx: v2.Context,
+    sqlClient: SqlClient,
+    managementClient: ManagementClient
+  ): Promise<void> {
+    let retryCount = 0;
+    const databaseWithUser: { [key: string]: boolean } = {};
+    this.config.databases.forEach((element) => {
+      databaseWithUser[element] = false;
+    });
+    while (true) {
       try {
-        this.config.azureSubscriptionId = getSubscriptionIdFromResourceId(
-          this.config.sqlResourceId
-        );
+        for (const database in databaseWithUser) {
+          if (!databaseWithUser[database]) {
+            await sqlClient.addDatabaseUser(database);
+            databaseWithUser[database] = true;
+          }
+        }
+        return;
       } catch (error) {
-        throw SqlResultFactory.UserError(
-          ErrorMessage.SqlInvalidConfigError.name,
-          ErrorMessage.SqlInvalidConfigError.message(this.config.sqlResourceId, error.message),
-          error
-        );
+        if (
+          !SqlClient.isFireWallError(error?.innerError) ||
+          retryCount >= Constants.maxRetryTimes
+        ) {
+          throw error;
+        } else {
+          retryCount++;
+          ctx.logProvider?.warning(
+            `[${Constants.pluginName}] Retry adding new firewall rule to access azure sql, because the local IP address has changed after added firewall rule for it. [Retry time: ${retryCount}]`
+          );
+          await managementClient.addLocalFirewallRule();
+        }
       }
     }
   }
-  private loadConfigResourceGroup(sqlResource: v3.AzureSQL) {
-    this.config.sqlResourceId = sqlResource.sqlResourceId;
-    if (this.config.sqlResourceId) {
-      try {
-        this.config.resourceGroup = getResourceGroupNameFromResourceId(this.config.sqlResourceId);
-      } catch (error) {
-        throw SqlResultFactory.UserError(
-          ErrorMessage.SqlInvalidConfigError.name,
-          ErrorMessage.SqlInvalidConfigError.message(this.config.sqlResourceId, error.message),
-          error
-        );
-      }
+  private async CheckAndSetAadAdmin(ctx: v2.Context, client: ManagementClient) {
+    ctx.logProvider?.info(Message.checkAadAdmin);
+    const existAdmin = await client.existAadAdmin();
+    if (!existAdmin) {
+      ctx.logProvider?.info(Message.addSqlAadAdmin);
+      await client.addAADadmin();
+    } else {
+      ctx.logProvider?.info(Message.skipAddAadAdmin);
+    }
+  }
+  private getIdentity(envInfo: v3.EnvInfoV3) {
+    const identityConfig = envInfo.state[Constants.identityPlugin] as v3.AzureIdentity;
+    this.config.identity = identityConfig?.identityName;
+    if (!this.config.identity) {
+      const error = SqlResultFactory.SystemError(
+        ErrorMessage.SqlGetConfigError.name,
+        ErrorMessage.SqlGetConfigError.message(Constants.identityPlugin, Constants.identityName)
+      );
+      throw error;
     }
   }
   private loadConfigSql(sqlResource: v3.AzureSQL) {
-    this.config.sqlEndpoint = sqlResource.sqlEndpointg;
+    this.config.sqlEndpoint = sqlResource.sqlEndpoint;
     this.config.databaseName = sqlResource.databaseName;
     if (this.config.sqlEndpoint) {
       this.config.sqlServer = this.config.sqlEndpoint.split(".")[0];
@@ -298,8 +390,29 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
   private loadConfig(envInfo: v3.EnvInfoV3) {
     const sqlResource = envInfo.state[BuiltInFeaturePluginNames.sql] as v3.AzureSQL;
     if (sqlResource) {
-      this.loadConfigSubscription(sqlResource);
-      this.loadConfigResourceGroup(sqlResource);
+      this.config.sqlResourceId = sqlResource.sqlResourceId;
+      if (this.config.sqlResourceId) {
+        try {
+          this.config.azureSubscriptionId = getSubscriptionIdFromResourceId(
+            this.config.sqlResourceId
+          );
+        } catch (error) {
+          throw SqlResultFactory.UserError(
+            ErrorMessage.SqlInvalidConfigError.name,
+            ErrorMessage.SqlInvalidConfigError.message(this.config.sqlResourceId, error.message),
+            error
+          );
+        }
+        try {
+          this.config.resourceGroup = getResourceGroupNameFromResourceId(this.config.sqlResourceId);
+        } catch (error) {
+          throw SqlResultFactory.UserError(
+            ErrorMessage.SqlInvalidConfigError.name,
+            ErrorMessage.SqlInvalidConfigError.message(this.config.sqlResourceId, error.message),
+            error
+          );
+        }
+      }
       this.loadConfigSql(sqlResource);
       this.loadDatabases(sqlResource);
     }
