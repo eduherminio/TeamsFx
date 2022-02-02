@@ -128,8 +128,7 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
   }
   async addFeature(
     ctx: v3.ContextWithManifestProvider,
-    inputs: v2.InputsWithProjectPath,
-    envInfo?: v3.EnvInfoV3
+    inputs: v2.InputsWithProjectPath
   ): Promise<Result<v2.ResourceTemplate | undefined, FxError>> {
     const solutionSettings = ctx.projectSetting.solutionSettings as AzureSolutionSettings;
     const activeResourcePlugins = solutionSettings.activeResourcePlugins;
@@ -145,8 +144,7 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
   }
   async afterOtherFeaturesAdded(
     ctx: v3.ContextWithManifestProvider,
-    inputs: v3.OtherFeaturesAddedInputs,
-    envInfo?: v3.EnvInfoV3
+    inputs: v3.OtherFeaturesAddedInputs
   ): Promise<Result<v2.ResourceTemplate | undefined, FxError>> {
     const result: ArmTemplateResult = {
       Reference: {
@@ -161,8 +159,8 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
   async getQuestionsForProvision(
     ctx: v2.Context,
     inputs: Inputs,
-    tokenProvider: TokenProvider,
-    envInfo?: v2.DeepReadonly<v3.EnvInfoV3Question>
+    envInfo: v2.DeepReadonly<v3.EnvInfoV3>,
+    tokenProvider: TokenProvider
   ): Promise<Result<QTreeNode | undefined, FxError>> {
     let sqlExist = false;
     if (envInfo && envInfo.state && envInfo.state[BuiltInFeaturePluginNames.sql]) {
