@@ -1,12 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { hooks } from "@feathersjs/hooks/lib";
 import { AzureSolutionSettings, err, FxError, ok, Result, v2, v3 } from "@microsoft/teamsfx-api";
 import * as path from "path";
 import { Service } from "typedi";
 import { ArmTemplateResult } from "../../../../common/armInterface";
 import { Bicep } from "../../../../common/constants";
 import { generateBicepFromFile } from "../../../../common/tools";
+import { CommonErrorHandlerMW } from "../../../../core/middleware/CommonErrorHandlerMW";
 import { getTemplatesFolder } from "../../../../folder";
 import { BuiltInFeaturePluginNames } from "../../../solution/fx-solution/v3/constants";
 import { Constants } from "../constants";
@@ -15,7 +17,7 @@ import { Constants } from "../constants";
 export class KeyVaultPluginV3 implements v3.FeaturePlugin {
   name = BuiltInFeaturePluginNames.keyVault;
   displayName = "Key Vault Plugin";
-  description = "Key Vault Plugin";
+  @hooks([CommonErrorHandlerMW({ telemetry: { component: BuiltInFeaturePluginNames.keyVault } })])
   async generateResourceTemplate(
     ctx: v3.ContextWithManifestProvider,
     inputs: v2.InputsWithProjectPath
@@ -53,6 +55,7 @@ export class KeyVaultPluginV3 implements v3.FeaturePlugin {
     };
     return ok({ kind: "bicep", template: result });
   }
+  @hooks([CommonErrorHandlerMW({ telemetry: { component: BuiltInFeaturePluginNames.keyVault } })])
   async addFeature(
     ctx: v3.ContextWithManifestProvider,
     inputs: v2.InputsWithProjectPath
@@ -64,6 +67,7 @@ export class KeyVaultPluginV3 implements v3.FeaturePlugin {
     if (!activeResourcePlugins.includes(this.name)) activeResourcePlugins.push(this.name);
     return ok(armRes.value);
   }
+  @hooks([CommonErrorHandlerMW({ telemetry: { component: BuiltInFeaturePluginNames.keyVault } })])
   async afterOtherFeaturesAdded(
     ctx: v3.ContextWithManifestProvider,
     inputs: v3.OtherFeaturesAddedInputs
