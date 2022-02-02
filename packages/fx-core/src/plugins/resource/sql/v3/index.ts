@@ -45,14 +45,19 @@ import { UserType } from "../utils/commonUtils";
 import { SqlClient } from "../sqlClient";
 import { TelemetryUtils } from "../utils/telemetryUtils";
 import { ManagementClient } from "../managementClient";
+import { CommonErrorHandlerMW } from "../../../../core/middleware/CommonErrorHandlerMW";
+import { hooks } from "@feathersjs/hooks/lib";
 
 @Service(BuiltInFeaturePluginNames.sql)
 export class SqlPluginV3 implements v3.FeaturePlugin {
   name = BuiltInFeaturePluginNames.sql;
   displayName = "Azure SQL Database";
-  description = "Azure SQL Database";
   totalFirewallRuleCount = 0;
   config: SqlConfig = new SqlConfig();
+
+  async pluginDependencies(ctx: v2.Context, inputs: Inputs): Promise<Result<string[], FxError>> {
+    return ok([BuiltInFeaturePluginNames.identity]);
+  }
 
   public async generateNewSqlServerBicep(
     ctx: v3.ContextWithManifestProvider
@@ -126,6 +131,7 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
     };
     return ok({ kind: "bicep", template: result });
   }
+  @hooks([CommonErrorHandlerMW({ telemetry: { component: BuiltInFeaturePluginNames.sql } })])
   async addFeature(
     ctx: v3.ContextWithManifestProvider,
     inputs: v2.InputsWithProjectPath
@@ -142,6 +148,7 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
       solutionSettings.azureResources.push("sql");
     return ok(armRes.value);
   }
+  @hooks([CommonErrorHandlerMW({ telemetry: { component: BuiltInFeaturePluginNames.sql } })])
   async afterOtherFeaturesAdded(
     ctx: v3.ContextWithManifestProvider,
     inputs: v3.OtherFeaturesAddedInputs
@@ -243,7 +250,7 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
       );
     }
   }
-
+  @hooks([CommonErrorHandlerMW({ telemetry: { component: BuiltInFeaturePluginNames.sql } })])
   async configureResource(
     ctx: v2.Context,
     inputs: v2.InputsWithProjectPath,
