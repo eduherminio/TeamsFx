@@ -139,6 +139,8 @@ export class SqlPluginV3 implements v3.FeaturePlugin {
       : await this.generateNewDatabaseBicep(ctx);
     if (armRes.isErr()) return err(armRes.error);
     if (!activeResourcePlugins.includes(this.name)) activeResourcePlugins.push(this.name);
+    if (!solutionSettings.azureResources.includes("sql"))
+      solutionSettings.azureResources.push("sql");
     return ok(armRes.value);
   }
   async afterOtherFeaturesAdded(
